@@ -10,6 +10,7 @@ permissions:
   contents: read
 
 jobs:
+
   lint:
     name: Lint Dockerfiles
     runs-on: ubuntu-latest
@@ -18,13 +19,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-              - name: Lint all Dockerfiles
+      - name: Lint all Dockerfiles
         run: |
           docker run --rm -i hadolint/hadolint < frontend/Dockerfile
           docker run --rm -i hadolint/hadolint < catalog-service/Dockerfile
           docker run --rm -i hadolint/hadolint < inventory-service/Dockerfile
           docker run --rm -i hadolint/hadolint < order-service/Dockerfile
-
   build:
     name: Build and check image size
     runs-on: ubuntu-latest
