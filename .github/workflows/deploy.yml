@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,11 +14,11 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      frontend: ${{ steps.filter.outputs.frontend }}
-      catalog: ${{ steps.filter.outputs.catalog }}
-      inventory: ${{ steps.filter.outputs.inventory }}
-      orders: ${{ steps.filter.outputs.orders }}
-      any: ${{ steps.filter.outputs.frontend == 'true' || steps.filter.outputs.catalog == 'true' || steps.filter.outputs.inventory == 'true' || steps.filter.outputs.orders == 'true' }}
+      frontend: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.frontend }}
+      catalog: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.catalog }}
+      inventory: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.inventory }}
+      orders: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.orders }}
+      any: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.frontend == 'true' || steps.filter.outputs.catalog == 'true' || steps.filter.outputs.inventory == 'true' || steps.filter.outputs.orders == 'true' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +27,7 @@ jobs:
 
       - name: Detect changed services
         id: filter
+        if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v3
         with:
           filters: |
