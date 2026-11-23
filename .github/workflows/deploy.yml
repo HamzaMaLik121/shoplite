@@ -177,7 +177,13 @@ jobs:
              SERVICE_LIST='$SERVICES' \
              /opt/shoplite/deploy.sh"
 
-      - name: Smoke test
+  smoke-test:
+    name: Smoke test
+    needs: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Call /api/catalog/health
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN }}
         run: |
