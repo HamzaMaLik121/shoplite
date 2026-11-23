@@ -1,18 +1,30 @@
 #!/usr/bin/env bash
-# Stops and removes the stack. Keeps the pgdata volume unless --purge is given.
-# Usage: ./scripts/down.sh [--purge]
+# ShopLite Phase 1: stop and remove containers and networks.
+#
+#   ./scripts/down.sh            # keeps the pgdata volume (data survives)
+#   ./scripts/down.sh --purge    # removes the volume too (fresh seed next start)
 set -euo pipefail
 
-for name in frontend orders inventory catalog postgres; do
-  docker rm -f "$name" >/dev/null 2>&1 && echo "removed $name" || true
+cd "$(dirname "$0")/.."
+
+purge=false
+for arg in "$@"; do
+  case $arg in
+    --purge) purge=true ;;
+    *) echo "usage: $0 [--purge]" >&2; exit 2 ;;
+  esac
 done
 
-for net in frontend-net backend-net; do
-  docker network rm "$net" >/dev/null 2>&1 && echo "removed network $net" || true
-done
+echo "Removing containers"
+# The frontend first so it stops accepting requests while the rest shut down.
+docker rm -f frontend orders inventory catalog postgres >/dev/null 2>&1 || true
 
-if [ "${1:-}" = "--purge" ]; then
-  docker volume rm pgdata >/dev/null 2>&1 && echo "removed volume pgdata" || true
+echo "Removing networks"
+docker network rm frontend-net backend-net >/dev/null 2>&1 || true
+
+if $purge; then
+  echo "Removing pgdata volume (all data will be lost)"
+  docker volume rm pgdata >/dev/null 2>&1 || true
 else
-  echo "Kept volume pgdata (use --purge to delete data)"
+  echo "Keeping pgdata volume (use --purge to delete it)"
 fi
