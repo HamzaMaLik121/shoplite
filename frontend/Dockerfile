@@ -20,12 +20,13 @@ FROM nginx:1.27-alpine-slim AS runtime
 # even on hosts where unprivileged low ports are disabled.
 # Alpine repos keep only current versions; the base image tag is the pin.
 # hadolint ignore=DL3018
-RUN apk add --no-cache --virtual .setcap libcap \
+# hadolint ignore=DL3018
+RUN apk upgrade --no-cache libssl3 libcrypto3 \
+    && apk add --no-cache --virtual .setcap libcap \
     && setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx \
     && apk del .setcap \
     && mkdir -p /etc/nginx/templates /var/cache/nginx \
     && chown -R nginx:nginx /etc/nginx /var/cache/nginx /run /usr/share/nginx
-
 # Only ${SERVER_NAME} is substituted in the template; nginx's own $variables
 # ($host, $uri, ...) are left alone.
 ENV NGINX_ENVSUBST_FILTER='^(SERVER_NAME|SERVER_ALIASES)$' \
