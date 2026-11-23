@@ -1,72 +1,49 @@
-# Build the four images, push them to ECR with the commit SHA as the tag, then
-# tell the VM to pull that tag and restart the stack.
-#
-# Nothing here contains secrets: AWS access comes from OIDC (no long-lived
-# keys) and the VM details come from the "production" environment's secrets.
-#
-# Required repository/environment secrets:
-#   AWS_ROLE_ARN   IAM role GitHub may assume, trusted for this repo
-#   VM_HOST        public address of the instance
-#   VM_USER        ssh user (ubuntu)
-#   VM_SSH_KEY     private key for that user
-name: Deploy
+name: ShopLite CD
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches:
+      - main
 
 permissions:
-  id-token: write # required for OIDC
   contents: read
-
-env:
-  AWS_REGION: us-east-1
-  ECR_REGISTRY: 418059030300.dkr.ecr.us-east-1.amazonaws.com
+  id-token: write
 
 jobs:
-  test-and-lint:
-    name: Test and lint
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      catalog: ${{ steps.filter.outputs.catalog }}
+      inventory: ${{ steps.filter.outputs.inventory }}
+      orders: ${{ steps.filter.outputs.orders }}
+      any: ${{ steps.filter.outputs.frontend == 'true' || steps.filter.outputs.catalog == 'true' || steps.filter.outputs.inventory == 'true' || steps.filter.outputs.orders == 'true' }}
+
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
         with:
-          node-version: "26"
-          cache: npm
-          cache-dependency-path: |
-            catalog-service/package-lock.json
-            frontend/package-lock.json
+          fetch-depth: 0
 
-      - name: Catalog tests
-        working-directory: catalog-service
-        run: npm ci && npm test --if-present
-
-      - name: Frontend build
-        working-directory: frontend
-        run: npm ci && npm run build
-
-      - uses: actions/setup-go@v5
+      - name: Detect changed services
+        id: filter
+        uses: dorny/paths-filter@v3
         with:
-          go-version-file: inventory-service/go.mod
-      - name: Inventory vet and test
-        working-directory: inventory-service
-        run: go vet ./... && go test ./...
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: Orders tests
-        working-directory: order-service
-        run: mvn -B --no-transfer-progress test
+          filters: |
+            frontend:
+              - 'frontend/**'
+            catalog:
+              - 'catalog-service/**'
+            inventory:
+              - 'inventory-service/**'
+            orders:
+              - 'order-service/**'
 
   build-and-push:
     name: Build and push ${{ matrix.service }}
-    needs: test-and-lint
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
@@ -79,50 +56,118 @@ jobs:
             context: inventory-service
           - service: orders
             context: order-service
+
+    steps:
+      - name: Skip unchanged service
+        if: needs.changes.outputs[matrix.service] != 'true'
+        run: echo "No changes in ${{ matrix.service }}. Skipping."
+
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs[matrix.service] == 'true'
+
+      - name: Configure AWS credentials using OIDC
+        if: needs.changes.outputs[matrix.service] == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: needs.changes.outputs[matrix.service] == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        if: needs.changes.outputs[matrix.service] == 'true'
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPOSITORY_URI: 418059030300.dkr.ecr.us-east-1.amazonaws.com/${{ vars.ECR_REPOSITORY }}
+          SERVICE_LIST: ${{ matrix.service }}
+        run: |
+          chmod +x scripts/push.sh
+          ./scripts/push.sh
+
+      - name: Trivy scan pushed image
+        if: needs.changes.outputs[matrix.service] == 'true'
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 418059030300.dkr.ecr.us-east-1.amazonaws.com/${{ vars.ECR_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
+          scan-type: image
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+  deploy:
+    name: Deploy changed services to EC2
+    needs: [changes, build-and-push]
+    if: |
+      needs.changes.outputs.any == 'true' &&
+      needs.build-and-push.result == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+
     steps:
       - uses: actions/checkout@v4
 
-      # Short-lived credentials; no AWS keys stored in GitHub.
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag and push
+      - name: Prepare SSH
         env:
-          IMAGE: ${{ env.ECR_REGISTRY }}/shop-${{ matrix.service }}
-          TAG: ${{ github.sha }}
+          SSH_PRIVATE_KEY: ${{ secrets.VM_SSH_KEY }}
         run: |
-          set -euo pipefail
-          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" "${{ matrix.context }}"
-          docker push "$IMAGE:$TAG"
-          docker push "$IMAGE:latest"
-          echo "### shop-${{ matrix.service }}:$TAG" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`$IMAGE:$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/shoplite_deploy
+          chmod 600 ~/.ssh/shoplite_deploy
 
-  deploy:
-    name: Deploy to the VM
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Pull the new tag and restart
+      - name: Copy deployment files
         env:
-          SSH_KEY: ${{ secrets.VM_SSH_KEY }}
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USER }}
-          TAG: ${{ github.sha }}
         run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+          ssh -i ~/.ssh/shoplite_deploy \
+            -o StrictHostKeyChecking=accept-new \
             "$VM_USER@$VM_HOST" \
-            "cd ~/shoplite && \
-             git pull --ff-only && \
-             aws ecr get-login-password --region '${{ env.AWS_REGION }}' | \
-               docker login --username AWS --password-stdin '${{ env.ECR_REGISTRY }}' && \
-             TAG='$TAG' REGISTRY='${{ env.ECR_REGISTRY }}' ./scripts/up.sh"
+            "mkdir -p /opt/shoplite/db"
+
+          scp -i ~/.ssh/shoplite_deploy \
+            -o StrictHostKeyChecking=accept-new \
+            scripts/deploy.sh \
+            "$VM_USER@$VM_HOST:/opt/shoplite/deploy.sh"
+
+          scp -i ~/.ssh/shoplite_deploy \
+            -o StrictHostKeyChecking=accept-new \
+            db/init.sql \
+            "$VM_USER@$VM_HOST:/opt/shoplite/db/init.sql"
+
+      - name: Deploy only changed services
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          IMAGE_TAG: ${{ github.sha }}
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+          CATALOG_CHANGED: ${{ needs.changes.outputs.catalog }}
+          INVENTORY_CHANGED: ${{ needs.changes.outputs.inventory }}
+          ORDERS_CHANGED: ${{ needs.changes.outputs.orders }}
+        run: |
+          SERVICES=""
+
+          [ "$FRONTEND_CHANGED" = "true" ] && SERVICES="$SERVICES frontend"
+          [ "$CATALOG_CHANGED" = "true" ] && SERVICES="$SERVICES catalog"
+          [ "$INVENTORY_CHANGED" = "true" ] && SERVICES="$SERVICES inventory"
+          [ "$ORDERS_CHANGED" = "true" ] && SERVICES="$SERVICES orders"
+
+          SERVICES="$(echo "$SERVICES" | xargs)"
+
+          echo "Deploying: $SERVICES"
+
+          ECR_URI="418059030300.dkr.ecr.us-east-1.amazonaws.com/${{ vars.ECR_REPOSITORY }}"
+
+          ssh -i ~/.ssh/shoplite_deploy \
+            -o StrictHostKeyChecking=accept-new \
+            "$VM_USER@$VM_HOST" \
+            "chmod +x /opt/shoplite/deploy.sh && \
+             IMAGE_TAG='$IMAGE_TAG' \
+             AWS_REGION='$AWS_REGION' \
+             ECR_REPOSITORY_URI='$ECR_URI' \
+             SERVICE_LIST='$SERVICES' \
+             /opt/shoplite/deploy.sh"

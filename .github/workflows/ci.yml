@@ -4,13 +4,13 @@ on:
   pull_request:
     branches:
       - main
+
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
   changes:
-    name: Detect changed services
     runs-on: ubuntu-latest
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -19,12 +19,11 @@ jobs:
       orders: ${{ steps.filter.outputs.orders }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Detect changes
-        uses: dorny/paths-filter@v3
+      - name: Detect changed services
         id: filter
+        uses: dorny/paths-filter@v3
         with:
           filters: |
             frontend:
@@ -36,57 +35,86 @@ jobs:
             orders:
               - 'order-service/**'
 
-  build:
-    name: Build and check image size
+  test:
+    name: CI - ${{ matrix.service }}
     needs: changes
+    if: |
+      needs.changes.outputs.frontend == 'true' ||
+      needs.changes.outputs.catalog == 'true' ||
+      needs.changes.outputs.inventory == 'true' ||
+      needs.changes.outputs.orders == 'true'
+
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - service: frontend
-            context: ./frontend
-            limit: 60
-            filter: frontend
-
+            context: frontend
+            dockerfile: frontend/Dockerfile
+            budget: 60
           - service: catalog
-            context: ./catalog-service
-            limit: 200
-            filter: catalog
-
+            context: catalog-service
+            dockerfile: catalog-service/Dockerfile
+            budget: 200
           - service: inventory
-            context: ./inventory-service
-            limit: 30
-            filter: inventory
-
+            context: inventory-service
+            dockerfile: inventory-service/Dockerfile
+            budget: 30
           - service: orders
-            context: ./order-service
-            limit: 300
-            filter: orders
+            context: order-service
+            dockerfile: order-service/Dockerfile
+            budget: 300
 
     steps:
-      - name: Checkout repository
-        if: needs.changes.outputs[matrix.filter] == 'true'
-        uses: actions/checkout@v4
+      - name: Skip unchanged service
+        if: needs.changes.outputs[matrix.service] != 'true'
+        run: echo "No changes in ${{ matrix.service }}. Skipping."
 
-      - name: Build Docker image
-        if: needs.changes.outputs[matrix.filter] == 'true'
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs[matrix.service] == 'true'
+
+      - name: Hadolint
+        if: needs.changes.outputs[matrix.service] == 'true'
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+
+      - name: Build image
+        if: needs.changes.outputs[matrix.service] == 'true'
         run: |
-          docker build -t shoplite-${{ matrix.service }}:ci ${{ matrix.context }}
+          docker build \
+            --platform linux/amd64 \
+            -t shoplite-${{ matrix.service }}:ci \
+            ${{ matrix.context }}
 
       - name: Check image size
-        if: needs.changes.outputs[matrix.filter] == 'true'
+        if: needs.changes.outputs[matrix.service] == 'true'
+        env:
+          SERVICE: ${{ matrix.service }}
+          BUDGET: ${{ matrix.budget }}
         run: |
-          SIZE=$(docker image inspect shoplite-${{ matrix.service }}:ci --format='{{.Size}}')
+          SIZE=$(docker image inspect \
+            shoplite-${SERVICE}:ci --format='{{.Size}}')
+
           SIZE_MB=$((SIZE / 1000000))
 
-          echo "Image: ${{ matrix.service }}"
-          echo "Size: ${SIZE_MB} MB"
-          echo "Limit: ${{ matrix.limit }} MB"
+          echo "$SERVICE image: ${SIZE_MB} MB"
+          echo "Budget: ${BUDGET} MB"
 
-          if [ "$SIZE" -gt $(( ${{ matrix.limit }} * 1000000 )) ]; then
-            echo "Image exceeds the size limit!"
+          if [ "$SIZE" -gt "$((BUDGET * 1000000))" ]; then
+            echo "Image exceeds size budget"
             exit 1
           fi
 
-          echo "Image size is within the limit."
+      - name: Trivy critical vulnerability scan
+        if: needs.changes.outputs[matrix.service] == 'true'
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: shoplite-${{ matrix.service }}:ci
+          scan-type: image
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
