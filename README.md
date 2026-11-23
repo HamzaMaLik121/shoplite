@@ -131,3 +131,10 @@ All ten Phase 1 checks and their output are in
 - [ ] `scripts/push.sh`, `scripts/deploy.sh`
 - [ ] `.github/workflows/ci.yml`, `deploy.yml`
 - [ ] `docs/evidence/phase2.md`
+
+## Smoke test variable
+
+The deploy job calls `/api/catalog/health` at the address in the repository variable
+`APP_DOMAIN` (GitHub: Settings -> Secrets and variables -> Actions -> Variables).
+Set it without `http://`, for example `100.27.40.157`. It must match `SERVER_NAME`
+in `/opt/shoplite/.env` on the VM, because nginx closes requests with any other Host.
