@@ -154,13 +154,20 @@ for service in catalog inventory orders; do
 done
 
 # On a cloud VM, nginx has to answer for the address people actually type.
-# No-op on a laptop: the metadata service is unreachable there.
-public_ip=""
+# Prefer the EC2 metadata service; fall back to SERVER_ALIASES from .env when
+# IMDS is unreachable (locked down, or not EC2). No-op on a laptop.
+detected_ip=""
 imds_token=$(curl -fsS --max-time 2 -X PUT "http://169.254.169.254/latest/api/token" \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
 if [[ -n $imds_token ]]; then
-  public_ip=$(curl -fsS --max-time 2 -H "X-aws-ec2-metadata-token: $imds_token" \
+  detected_ip=$(curl -fsS --max-time 2 -H "X-aws-ec2-metadata-token: $imds_token" \
     http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+fi
+public_ip=${detected_ip:-${SERVER_ALIASES:-}}
+
+if [[ -z $public_ip ]]; then
+  echo "    note: no public IP detected; the site answers only for ${SERVER_NAME}" >&2
+  echo "          add SERVER_ALIASES=<ip> to .env to serve it by address too" >&2
 fi
 
 log "Frontend (frontend-net only, the only published port)"
