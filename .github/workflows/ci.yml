@@ -1,18 +1,44 @@
-
 name: ShopLite CI
 
 on:
   pull_request:
     branches:
       - main
-
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      catalog: ${{ steps.filter.outputs.catalog }}
+      inventory: ${{ steps.filter.outputs.inventory }}
+      orders: ${{ steps.filter.outputs.orders }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+            catalog:
+              - 'catalog-service/**'
+            inventory:
+              - 'inventory-service/**'
+            orders:
+              - 'order-service/**'
 
   build:
     name: Build and check image size
+    needs: changes
     runs-on: ubuntu-latest
 
     strategy:
@@ -21,28 +47,35 @@ jobs:
           - service: frontend
             context: ./frontend
             limit: 60
+            filter: frontend
 
           - service: catalog
             context: ./catalog-service
             limit: 200
+            filter: catalog
 
           - service: inventory
             context: ./inventory-service
             limit: 30
+            filter: inventory
 
           - service: orders
             context: ./order-service
             limit: 300
+            filter: orders
 
     steps:
       - name: Checkout repository
+        if: needs.changes.outputs[matrix.filter] == 'true'
         uses: actions/checkout@v4
 
       - name: Build Docker image
+        if: needs.changes.outputs[matrix.filter] == 'true'
         run: |
           docker build -t shoplite-${{ matrix.service }}:ci ${{ matrix.context }}
 
       - name: Check image size
+        if: needs.changes.outputs[matrix.filter] == 'true'
         run: |
           SIZE=$(docker image inspect shoplite-${{ matrix.service }}:ci --format='{{.Size}}')
           SIZE_MB=$((SIZE / 1000000))
