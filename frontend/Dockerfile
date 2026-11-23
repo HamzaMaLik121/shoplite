@@ -28,8 +28,9 @@ RUN apk add --no-cache --virtual .setcap libcap \
 
 # Only ${SERVER_NAME} is substituted in the template; nginx's own $variables
 # ($host, $uri, ...) are left alone.
-ENV NGINX_ENVSUBST_FILTER=^SERVER_NAME$ \
-    SERVER_NAME=localhost
+ENV NGINX_ENVSUBST_FILTER='^(SERVER_NAME|SERVER_ALIASES)$' \
+    SERVER_NAME=localhost \
+    SERVER_ALIASES=
 
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html

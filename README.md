@@ -75,6 +75,23 @@ TAG=1.1.0 ./scripts/up.sh     # any tag built earlier
 ./scripts/down.sh --purge     # deletes the data too
 ```
 
+`up.sh` builds any `shop-*` image that is missing before it starts anything, so
+a fresh clone only needs `./scripts/up.sh`. To pull the images from a registry
+instead of building them (once they are pushed to ECR):
+
+```bash
+REGISTRY=123456789012.dkr.ecr.eu-west-1.amazonaws.com ./scripts/up.sh
+```
+
+If anything fails to start, the containers that run created are removed again,
+so the host is never left half-up.
+
+On a cloud VM the script asks the instance metadata service for the public IP
+and adds it to nginx's `server_name`, so `http://<public-ip>` serves the app as
+well as `http://shoplite.test`. The port still has to be open in the security
+group.
+```
+
 Add the name to `/etc/hosts` once:
 
 ```
