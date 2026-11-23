@@ -13,7 +13,6 @@ permissions:
 jobs:
   changes:
     runs-on: ubuntu-latest
-
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       catalog: ${{ steps.filter.outputs.catalog }}
@@ -60,38 +59,9 @@ jobs:
             context: order-service
 
     steps:
-      - name: Skip unchanged service
-        if: needs.changes.outputs[matrix.service] != 'true'
-        run: echo "No changes in ${{ matrix.service }}. Skipping."
-
-      - uses: actions/checkout@v4
+      - name: Checkout
         if: needs.changes.outputs[matrix.service] == 'true'
-
-      # DEBUG: Inspect GitHub token claims BEFORE AWS authentication
-      - name: Debug GitHub OIDC claims
-        if: needs.changes.outputs[matrix.service] == 'true'
-        run: |
-          TOKEN=$(curl -fsS \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
-            | jq -r '.value')
-
-          export TOKEN
-
-          python3 -c '
-          import os, json, base64
-          token = os.environ["TOKEN"]
-          payload = token.split(".")[1]
-          payload += "=" * (-len(payload) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(payload))
-          print(json.dumps({
-              "iss": claims.get("iss"),
-              "aud": claims.get("aud"),
-              "sub": claims.get("sub"),
-              "repository": claims.get("repository"),
-              "ref": claims.get("ref")
-          }, indent=2))
-          '
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials using OIDC
         if: needs.changes.outputs[matrix.service] == 'true'
@@ -185,7 +155,6 @@ jobs:
           [ "$ORDERS_CHANGED" = "true" ] && SERVICES="$SERVICES orders"
 
           SERVICES="$(echo "$SERVICES" | xargs)"
-
           echo "Deploying: $SERVICES"
 
           ECR_URI="418059030300.dkr.ecr.us-east-1.amazonaws.com/${{ vars.ECR_REPOSITORY }}"
