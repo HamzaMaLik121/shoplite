@@ -1,0 +1,6 @@
+.env
+.env.*
+Dockerfile
+.dockerignore
+inventory-service
+.DS_Store

@@ -1,0 +1,6 @@
+target
+.env
+.env.*
+Dockerfile
+.dockerignore
+.DS_Store
