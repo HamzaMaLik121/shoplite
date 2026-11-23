@@ -89,7 +89,7 @@ jobs:
 
       - name: Trivy scan pushed image
         if: needs.changes.outputs[matrix.service] == 'true'
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: 418059030300.dkr.ecr.us-east-1.amazonaws.com/${{ vars.ECR_REPOSITORY }}:${{ matrix.service }}-${{ github.sha }}
           scan-type: image
