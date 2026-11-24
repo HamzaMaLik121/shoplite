@@ -1,140 +1,172 @@
-# ShopLite
+# ShopLite — Multi-Service DevOps Project
 
-A tiny online shop split into five containers. The application is deliberately
-minimal; the real work in this project is the Docker / AWS / CI side.
+A containerized multi-service application deployed on AWS EC2 using Docker, Amazon ECR, GitHub Actions, and Nginx reverse proxy.
 
-| Service   | Folder               | Stack                  | Port | Table      | Endpoints                                                     |
-|-----------|----------------------|------------------------|------|------------|---------------------------------------------------------------|
-| frontend  | `frontend/`          | React (Vite)           | 80   | –          | UI; calls `/api/<service>/...`                                |
-| catalog   | `catalog-service/`   | Node.js + Express      | 3000 | `products` | `GET /health`, `GET /products`, `GET /products/:id`, `POST /products` |
-| inventory | `inventory-service/` | Go, `net/http`         | 8081 | `stock`    | `GET /health`, `GET /stock/:productId`, `POST /stock/reserve` |
-| orders    | `order-service/`     | Java 21, Spring Boot   | 8082 | `orders`   | `GET /health`, `GET /orders`, `POST /orders`                  |
-| postgres  | –                    | `postgres:17-alpine`   | 5432 | all three  | –                                                             |
+## Architecture
 
-`POST /orders {"productId":1,"quantity":2}` → orders asks catalog for the price
-(unknown product → `400`), asks inventory to reserve stock (not enough → `409`),
-then saves the order with `total = price × quantity` and returns `201`.
+ShopLite consists of five containers:
 
-## Configuration
-
-Every value comes from the environment; see [`.env.example`](.env.example).
-Copy it to `.env` (git-ignored) and set real values.
-
-## Running without Docker (for app development only)
-
-Needs Postgres, Node 22+, Go 1.26, Java 21 + Maven.
-
-```bash
-# 1. database
-createdb shopdb && psql -d shopdb -f db/init.sql
-
-# 2. backends (each in its own terminal, with DB_* exported)
-cd catalog-service && npm install && npm start            # :3000
-cd inventory-service && go run .                           # :8081
-cd order-service && mvn spring-boot:run                    # :8082
-
-# 3. frontend: Vite proxies /api/* to the backends like nginx will
-cd frontend && npm install && npm run dev                  # :5173
-```
-
-The inventory binary also supports `inventory-service -healthcheck`, which
-calls its own `/health` and exits 0/1, for use in a distroless `HEALTHCHECK`.
-
-## Running with Docker (Phase 1)
-
-### Build the images
-
-```bash
-docker build -t shop-frontend:1.0.0  frontend
-docker build -t shop-catalog:1.0.0   catalog-service
-docker build -t shop-inventory:1.0.0 inventory-service
-docker build -t shop-orders:1.0.0    order-service
-```
-
-Sizes and budgets (the DISK USAGE column of `docker images`):
-
-| Image | Size | Budget |
+| Container | Technology | Purpose |
 |---|---|---|
-| `shop-frontend` | 21.8 MB | 60 MB |
-| `shop-catalog` | 190 MB | 200 MB |
-| `shop-inventory` | 21.3 MB | 30 MB |
-| `shop-orders` | 165 MB | 300 MB |
+| Frontend | React / Nginx | Web application and reverse proxy |
+| Catalog | Node.js | Catalog API |
+| Inventory | Go | Inventory API |
+| Orders | Java / Spring Boot | Orders API |
+| PostgreSQL | PostgreSQL 17 | Database |
 
-All four pass `hadolint`. The only rule ignored is `DL3018` (pin `apk` package
-versions): Alpine repositories keep only current versions, so pinning package
-versions makes builds break as soon as Alpine updates. The base image tag is the
-pin instead. Each ignore is marked in the Dockerfile with that reason.
+### Docker Network Architecture
 
-### Start and stop
+```text
+                    Browser
+                       |
+                    Port 80
+                       |
+                +--------------+
+                |   Frontend   |
+                |     Nginx    |
+                +--------------+
+                       |
+                 frontend-net
+                /      |       \
+           Catalog  Inventory  Orders
+                \      |       /
+                 backend-net
+                   (internal)
+                       |
+                  PostgreSQL
+```
+
+- Frontend connects only to `frontend-net`.
+- Catalog, Inventory, and Orders connect to both networks.
+- PostgreSQL connects only to `backend-net`.
+- `backend-net` is an internal Docker network.
+- Only the frontend publishes a host port: `80`.
+- PostgreSQL uses persistent Docker volume storage.
+
+## Technology Stack
+
+- Docker and Docker Compose
+- AWS EC2
+- Amazon Elastic Container Registry (ECR)
+- GitHub Actions
+- GitHub Actions OIDC authentication
+- Nginx reverse proxy
+- Node.js, Go, Java, React
+- PostgreSQL
+- Trivy image scanning
+
+## AWS Deployment
+
+| Setting | Value |
+|---|---|
+| AWS Region | `us-east-1` |
+| ECR Repository | `shoplite` |
+| EC2 Operating System | Ubuntu |
+| Deployment Directory | `/opt/shoplite` |
+| Application Port | `80` |
+
+Images are stored in Amazon ECR and deployed to EC2 using GitHub Actions.
+
+GitHub Actions authenticates to AWS through OIDC rather than storing long-lived AWS access keys in GitHub secrets.
+
+Images are tagged using Git commit SHA values to support traceable deployments.
+
+## Reverse Proxy Routes
+
+Nginx routes incoming requests to the appropriate backend service.
+
+| Route | Backend |
+|---|---|
+| `/api/catalog/` | `catalog:3000` |
+| `/api/inventory/` | `inventory:8081` |
+| `/api/orders/` | `orders:8082` |
+| `/health` | Frontend health check |
+
+## Health Checks
+
+The following endpoints are available:
+
+```text
+/api/catalog/health
+/api/inventory/health
+/api/orders/health
+/health
+```
+
+## Deployment Verification
+
+The EC2 deployment has been tested.
+
+| Verification | Result |
+|---|---|
+| Frontend container health | Healthy |
+| Nginx configuration test | Passed |
+| Frontend health endpoint | HTTP 200 |
+| Catalog health endpoint | HTTP 200 |
+| Inventory health endpoint | HTTP 200 |
+| Orders health endpoint | HTTP 200 |
+| Backend network isolation | Verified |
+| PostgreSQL network placement | Verified |
+| Only frontend host port published | Verified |
+
+See [`docs/evidence/phase2.md`](docs/evidence/phase2.md) for deployment verification details.
+
+## Repository Structure
+
+```text
+shoplite/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       └── deploy.yml
+├── frontend/
+├── catalog-service/
+├── inventory-service/
+├── order-service/
+├── db/
+│   └── init.sql
+├── scripts/
+│   ├── up.sh
+│   ├── down.sh
+│   ├── push.sh
+│   └── deploy.sh
+├── docs/
+│   └── evidence/
+│       ├── phase1-tests.md
+│       └── phase2.md
+└── README.md
+```
+
+## Running Locally
+
+Requirements:
+- Docker
+- Docker Compose
+
+Start the application:
 
 ```bash
-cp .env.example .env          # once; .env is git-ignored
-./scripts/up.sh               # TAG=1.0.0 by default
-TAG=1.1.0 ./scripts/up.sh     # any tag built earlier
-./scripts/down.sh             # keeps the pgdata volume
-./scripts/down.sh --purge     # deletes the data too
+./scripts/up.sh
 ```
 
-`up.sh` builds any `shop-*` image that is missing before it starts anything, so
-a fresh clone only needs `./scripts/up.sh`. To pull the images from a registry
-instead of building them (once they are pushed to ECR):
+Stop the application:
 
 ```bash
-REGISTRY=123456789012.dkr.ecr.eu-west-1.amazonaws.com ./scripts/up.sh
+./scripts/down.sh
 ```
 
-If anything fails to start, the containers that run created are removed again,
-so the host is never left half-up.
+## Security Notes
 
-On a cloud VM the script asks the instance metadata service for the public IP
-and adds it to nginx's `server_name`, so `http://<public-ip>` serves the app as
-well as `http://shoplite.test`. The port still has to be open in the security
-group.
-```
+- Backend services are not directly published to host ports.
+- PostgreSQL is isolated on an internal Docker network.
+- GitHub Actions uses OIDC for AWS authentication.
+- EC2 uses an IAM role to pull images from ECR.
+- Application environment variables are kept outside the repository.
 
-Add the name to `/etc/hosts` once:
+**Never commit `.env`, private SSH keys, AWS credentials, or other secrets.**
 
-```
-127.0.0.1 shoplite.test
-```
+## Project Status
 
-Then open <http://shoplite.test>.
+The application is deployed on AWS EC2. Frontend health, reverse proxy routing, backend health endpoints, and Docker network architecture have been verified.
 
-`up.sh` creates the networks and volume if missing, replaces containers that
-already exist, and waits for each tier to report healthy (Postgres, then the
-backends, then the frontend) before starting the next. On failure it prints the
-last 20 log lines and exits non-zero.
-
-### Network layout
-
-```
-              browser
-                 |  :80 (only published port)
-           [ frontend ]  frontend-net
-            /    |    \
-      catalog inventory orders   both networks
-            \    |    /
-             backend-net (internal)
-                   |
-              [ postgres ]   no internet, no host port
-```
-
-Container names are the DNS names: `postgres`, `catalog`, `inventory`, `orders`,
-`frontend`. `frontend/nginx.conf` proxies `/api/<service>/*` over
-`frontend-net`, strips the prefix, and closes any other Host header with `444`.
-
-All ten Phase 1 checks and their output are in
-[`docs/evidence/phase1-tests.md`](docs/evidence/phase1-tests.md).
-
-## TODO (the rest of the project)
-
-- [ ] `scripts/push.sh`, `scripts/deploy.sh`
-- [ ] `.github/workflows/ci.yml`, `deploy.yml`
-- [ ] `docs/evidence/phase2.md`
-
-## Smoke test variable
-
-The deploy job calls `/api/catalog/health` at the address in the repository variable
-`APP_DOMAIN` (GitHub: Settings -> Secrets and variables -> Actions -> Variables).
-Set it without `http://`, for example `100.27.40.157`. It must match `SERVER_NAME`
-in `/opt/shoplite/.env` on the VM, because nginx closes requests with any other Host.
+Further evidence and remaining assignment checks are tracked in `docs/evidence/`.
