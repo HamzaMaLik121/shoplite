@@ -39,6 +39,9 @@ jobs:
           filters: |
             frontend:
               - 'frontend/**'
+              - 'scripts/deploy.sh'
+              - 'deploy/**'
+              - '.github/workflows/deploy.yml'
             catalog:
               - 'catalog-service/**'
             inventory:
@@ -132,12 +135,17 @@ jobs:
           ssh -i ~/.ssh/shoplite_deploy \
             -o StrictHostKeyChecking=accept-new \
             "$VM_USER@$VM_HOST" \
-            "mkdir -p /opt/shoplite/db"
+            "mkdir -p /opt/shoplite/db /opt/shoplite/certbot/www/.well-known/acme-challenge"
 
           scp -i ~/.ssh/shoplite_deploy \
             -o StrictHostKeyChecking=accept-new \
             scripts/deploy.sh \
             "$VM_USER@$VM_HOST:/opt/shoplite/deploy.sh"
+
+          scp -i ~/.ssh/shoplite_deploy \
+            -o StrictHostKeyChecking=accept-new \
+            deploy/https-nginx.conf \
+            "$VM_USER@$VM_HOST:/opt/shoplite/https-nginx.conf"
 
           scp -i ~/.ssh/shoplite_deploy \
             -o StrictHostKeyChecking=accept-new \
@@ -183,18 +191,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Call /api/catalog/health
+      - name: Call /api/catalog/health over HTTPS
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN }}
         run: |
           for i in $(seq 1 12); do
-            if curl -fsS --max-time 5 -H "Host: $APP_DOMAIN" "http://$APP_DOMAIN/api/catalog/health"; then
+            if curl -fsS --max-time 5 "https://$APP_DOMAIN/api/catalog/health"; then
               echo
-              echo "Smoke test passed"
+              echo "HTTPS smoke test passed"
               exit 0
             fi
             echo "Attempt $i failed, retrying in 5s"
             sleep 5
           done
-          echo "Smoke test failed: /api/catalog/health did not answer at $APP_DOMAIN"
+          echo "Smoke test failed: HTTPS /api/catalog/health did not answer at $APP_DOMAIN"
           exit 1

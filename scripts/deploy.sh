@@ -8,6 +8,9 @@ set -euo pipefail
 
 APP_DIR="/opt/shoplite"
 HEALTH_TIMEOUT=60
+TLS_DIR="$APP_DIR/tls"
+HTTPS_CONF="$APP_DIR/https-nginx.conf"
+CERTBOT_DIR="$APP_DIR/certbot/www"
 
 cd "$APP_DIR"
 
@@ -64,8 +67,7 @@ docker network inspect backend-net >/dev/null 2>&1 \
 docker volume inspect pgdata >/dev/null 2>&1 \
   || docker volume create pgdata
 
-# Only create PostgreSQL if it does not already exist.
-# Existing database container and pgdata are preserved.
+# Preserve the existing PostgreSQL container and database volume.
 if ! docker container inspect postgres >/dev/null 2>&1; then
   echo "Creating PostgreSQL"
 
@@ -93,12 +95,26 @@ for SERVICE in $SERVICE_LIST; do
   docker pull "${ECR_REPOSITORY_URI}:${SERVICE}-${IMAGE_TAG}"
 done
 
+echo "Checking HTTPS configuration"
+
+if [[ " $SERVICE_LIST " == *" frontend "* ]]; then
+  test -s "$HTTPS_CONF" || {
+    echo "ERROR: HTTPS Nginx configuration missing"
+    exit 1
+  }
+
+  test -d "$TLS_DIR" || {
+    echo "ERROR: TLS directory missing"
+    exit 1
+  }
+
+  mkdir -p "$CERTBOT_DIR"
+fi
+
 echo "Deploying selected services"
 
 for SERVICE in $SERVICE_LIST; do
   IMAGE="${ECR_REPOSITORY_URI}:${SERVICE}-${IMAGE_TAG}"
-
-  docker rm -f "$SERVICE" >/dev/null 2>&1 || true
 
   if [[ "$SERVICE" == "frontend" ]]; then
     TOKEN=$(curl -fsS --max-time 2 -X PUT \
@@ -112,6 +128,22 @@ for SERVICE in $SERVICE_LIST; do
         http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
     fi
 
+    echo "Validating HTTPS Nginx configuration"
+
+    docker run --rm \
+      --user root \
+      --network frontend-net \
+      --env SERVER_NAME="$SERVER_NAME" \
+      --env SERVER_ALIASES="$PUBLIC_IP" \
+      -v "$HTTPS_CONF:/etc/nginx/templates/default.conf.template:ro" \
+      -v "$TLS_DIR:/etc/nginx/tls:ro" \
+      -v "$CERTBOT_DIR:/var/www/certbot:ro" \
+      --entrypoint /bin/sh \
+      "$IMAGE" -c \
+      'envsubst '\''${SERVER_NAME} ${SERVER_ALIASES}'\'' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -t'
+
+    docker rm -f frontend >/dev/null 2>&1 || true
+
     docker run -d \
       --name frontend \
       --network frontend-net \
@@ -119,8 +151,15 @@ for SERVICE in $SERVICE_LIST; do
       --env-file .env \
       -e SERVER_ALIASES="$PUBLIC_IP" \
       -p 80:80 \
+      -p 443:443 \
+      -v "$HTTPS_CONF:/etc/nginx/templates/default.conf.template:ro" \
+      -v "$TLS_DIR:/etc/nginx/tls:ro" \
+      -v "$CERTBOT_DIR:/var/www/certbot:ro" \
       "$IMAGE" >/dev/null
+
   else
+    docker rm -f "$SERVICE" >/dev/null 2>&1 || true
+
     docker run -d \
       --name "$SERVICE" \
       --network backend-net \
@@ -139,23 +178,30 @@ echo "Running smoke tests"
 for SERVICE in $SERVICE_LIST; do
   case "$SERVICE" in
     frontend)
-      URL="http://127.0.0.1/health"
+      URL="https://127.0.0.1/health"
       ;;
     catalog)
-      URL="http://127.0.0.1/api/catalog/health"
+      URL="https://127.0.0.1/api/catalog/health"
       ;;
     inventory)
-      URL="http://127.0.0.1/api/inventory/health"
+      URL="https://127.0.0.1/api/inventory/health"
       ;;
     orders)
-      URL="http://127.0.0.1/api/orders/health"
+      URL="https://127.0.0.1/api/orders/health"
+      ;;
+    *)
+      echo "ERROR: Unknown service: $SERVICE"
+      exit 1
       ;;
   esac
 
-  if ! curl -fsS --max-time 10 -H "Host: $SERVER_NAME" "$URL"; then
+  if ! curl -kfsS --max-time 10 \
+    --resolve "${SERVER_NAME}:443:127.0.0.1" \
+    "$URL"; then
     echo "ERROR: $SERVICE smoke test failed"
     exit 1
   fi
+
   echo
 done
 
