@@ -41,6 +41,7 @@ jobs:
               - 'frontend/**'
               - 'scripts/deploy.sh'
               - 'deploy/**'
+              - 'db/init.sql'
               - '.github/workflows/deploy.yml'
             catalog:
               - 'catalog-service/**'
@@ -132,25 +133,31 @@ jobs:
           VM_HOST: ${{ secrets.VM_HOST }}
           VM_USER: ${{ secrets.VM_USER }}
         run: |
-          ssh -i ~/.ssh/shoplite_deploy \
-            -o StrictHostKeyChecking=accept-new \
-            "$VM_USER@$VM_HOST" \
-            "mkdir -p /opt/shoplite/db /opt/shoplite/certbot/www/.well-known/acme-challenge"
-
           scp -i ~/.ssh/shoplite_deploy \
             -o StrictHostKeyChecking=accept-new \
             scripts/deploy.sh \
-            "$VM_USER@$VM_HOST:/opt/shoplite/deploy.sh"
-
-          scp -i ~/.ssh/shoplite_deploy \
-            -o StrictHostKeyChecking=accept-new \
-            deploy/https-nginx.conf \
-            "$VM_USER@$VM_HOST:/opt/shoplite/https-nginx.conf"
+            "$VM_USER@$VM_HOST:/tmp/shoplite-deploy.sh"
 
           scp -i ~/.ssh/shoplite_deploy \
             -o StrictHostKeyChecking=accept-new \
             db/init.sql \
-            "$VM_USER@$VM_HOST:/opt/shoplite/db/init.sql"
+            "$VM_USER@$VM_HOST:/tmp/shoplite-init.sql"
+
+          scp -i ~/.ssh/shoplite_deploy \
+            -o StrictHostKeyChecking=accept-new \
+            deploy/https-nginx.conf \
+            "$VM_USER@$VM_HOST:/tmp/shoplite-https-nginx.conf"
+
+          ssh -i ~/.ssh/shoplite_deploy \
+            -o StrictHostKeyChecking=accept-new \
+            "$VM_USER@$VM_HOST" \
+            'set -e
+             sudo mkdir -p /opt/shoplite/db /opt/shoplite/certbot/www/.well-known/acme-challenge
+             sudo install -m 755 /tmp/shoplite-deploy.sh /opt/shoplite/deploy.sh
+             sudo install -m 644 /tmp/shoplite-init.sql /opt/shoplite/db/init.sql
+             sudo install -m 644 /tmp/shoplite-https-nginx.conf /opt/shoplite/https-nginx.conf
+             sudo chown -R "$USER:$USER" /opt/shoplite/db /opt/shoplite/certbot
+             rm -f /tmp/shoplite-deploy.sh /tmp/shoplite-init.sql /tmp/shoplite-https-nginx.conf'
 
       - name: Deploy only changed services
         env:
@@ -191,7 +198,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Call /api/catalog/health over HTTPS
+      - name: Test HTTPS catalog API
         env:
           APP_DOMAIN: ${{ vars.APP_DOMAIN }}
         run: |
@@ -204,5 +211,6 @@ jobs:
             echo "Attempt $i failed, retrying in 5s"
             sleep 5
           done
-          echo "Smoke test failed: HTTPS /api/catalog/health did not answer at $APP_DOMAIN"
+
+          echo "HTTPS smoke test failed"
           exit 1
