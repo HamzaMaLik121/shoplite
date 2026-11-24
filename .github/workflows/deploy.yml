@@ -185,8 +185,7 @@ jobs:
           ssh -i ~/.ssh/shoplite_deploy \
             -o StrictHostKeyChecking=accept-new \
             "$VM_USER@$VM_HOST" \
-            "chmod +x /opt/shoplite/deploy.sh && \
-             IMAGE_TAG='$IMAGE_TAG' \
+            "sudo env IMAGE_TAG='$IMAGE_TAG' \
              AWS_REGION='$AWS_REGION' \
              ECR_REPOSITORY_URI='$ECR_URI' \
              SERVICE_LIST='$SERVICES' \
